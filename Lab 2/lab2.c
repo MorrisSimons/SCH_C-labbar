@@ -34,17 +34,7 @@
 SDL_Window* g_window = NULL;
 SDL_Renderer* g_renderer = NULL;
 SDL_Texture* g_streamTexture = NULL;
-// Declare global variables for pos_x and pos_y
-int pos_x = -1;
-int pos_y = -1;
-int last_dic = -1;
-int brightest_red = 0;
-// Used in timestamping
-int loops = 0;
-int timevalue = 0;
-// thread flag to capture img
-int captureflag = 0;
-bool exitprogramflag = false;
+
 typedef struct Pixel
     {
         unsigned char B;
@@ -53,7 +43,7 @@ typedef struct Pixel
         unsigned char A;
     } Pixel; //Used to store pixel colors
 
-typedef struct 
+typedef struct ImageParts
     {
         int start;
         int end;
@@ -72,10 +62,8 @@ static void YUYVtoRGB(unsigned char y, unsigned char u, unsigned char v, Pixel* 
     }
 
 
-void find_laser(Pixel* rgbConversion)
+void find_laser(Pixel* rgbConversion, int* pos_x, int* pos_y, int* brightest_red)
 {
-    pos_x = -1;
-    pos_y = -1;
     for (int y = 0; y < CAM_HEIGHT; y++)
     {
         for (int x = 0; x < CAM_WIDTH; x++)
@@ -86,56 +74,55 @@ void find_laser(Pixel* rgbConversion)
                 rgbConversion[px].A >= 200 &&
                 rgbConversion[px].G <= 60 &&
                 rgbConversion[px].B <= 60 &&
-                rgbConversion[px].R >= rgbConversion[brightest_red].R && 
-                rgbConversion[px].A >= rgbConversion[brightest_red].A
+                rgbConversion[px].R >= rgbConversion[*brightest_red].R && 
+                rgbConversion[px].A >= rgbConversion[*brightest_red].A
                 )
             {
-                brightest_red = px;
-                pos_x = x;
-                pos_y = y;
+                *brightest_red = px;
+                *pos_x = x;
+                *pos_y = y;
             }
         }
     }
 }
 
-void direction(int px_widht, int px_height){
-    if (px_height >= ((CAM_HEIGHT * 3) / 4) && (last_dic != 0))
+int direction(int px_x, int px_y){
+    if (px_y == -1 || px_x == -1){
+        // Not detected
+        return -1;
+    }
+    else if (px_y >= ((CAM_HEIGHT * 3) / 4))
     {
         // BACK
-        last_dic = 0;
+        return 0;
     }
-    else if (px_widht <= (CAM_WIDTH / 4) && px_height <= ((CAM_HEIGHT * 3) / 4) && last_dic != 1)
+    else if (px_x <= (CAM_WIDTH / 4) && px_y <= ((CAM_HEIGHT * 3) / 4))
     {
         // LEFT
-        last_dic = 1;
+        return 1;
     }
-    else if (px_widht >= (CAM_WIDTH * 3) / 4 && px_height <= ((CAM_HEIGHT * 3) / 4) && last_dic != 2)
+    else if (px_x >= (CAM_WIDTH * 3) / 4 && px_y <= ((CAM_HEIGHT * 3) / 4))
     {
         // RIGHT
-        last_dic = 2;
+        return 2;
     }
-    else if (px_widht <= ((CAM_WIDTH * 3) / 4) && (px_widht) >= (CAM_WIDTH / 4) && px_height <= ((CAM_HEIGHT * 3) / 4) && last_dic != 3)
+    else if (px_x <= ((CAM_WIDTH * 3) / 4) && (px_x) >= (CAM_WIDTH / 4) && px_y <= ((CAM_HEIGHT * 3) / 4))
     {
         // FORWARD
-        last_dic = 3;
+        return 3;
     }
 }
 
-void set_circle(Pixel* rgbConversion)
+void set_circle(Pixel* rgbConversion, int* pos_x, int* pos_y)
 {
     int k = CAM_HEIGHT / 2;
     int h = CAM_WIDTH / 2;
-    // Call find_laser to get h and k
-    find_laser(rgbConversion);
     
-    if (pos_x == -1 || pos_y == -1)
-        return;
-    direction(pos_x, pos_y);
     for (int y = 0; y < CAM_HEIGHT; y++)
     {
         for (int x = 0; x < CAM_WIDTH; x++)
         {
-            double r = sqrt(pow(x - pos_x, 2) + pow(y - pos_y, 2));
+            double r = sqrt(pow(x - *pos_x, 2) + pow(y - *pos_y, 2));
             if (r < CIRCLE_RADIUS && r > CIRCLE_RADIUS - CIRCLE_WIDTH)
             {
                 int px = (y) * (CAM_WIDTH) + (x);
@@ -148,55 +135,46 @@ void set_circle(Pixel* rgbConversion)
     }
 }
 
-double CalculateTime(double t0){
-    loops++;
-    double threading = (omp_get_wtime() - t0) * 1000;
-    double timevalue = timevalue + threading;
-    double avg_time = timevalue / (double)loops;
-    return avg_time;
-}
-
-void PrintImageData(double avg_time, int last_dic){
+void PrintImageData(double ProcessImage_timer, int last_dic){
     switch (last_dic)
     {
     case 0:
-        printf("Thread Time avg: %f ms and direction back       \n",avg_time); 
+        printf("Thread Time avg: %.2f ms and direction back       \n",ProcessImage_timer); 
         break;
     case 1:
-        printf("Thread Time avg: %f ms and direction left       \n",avg_time); 
+        printf("Thread Time avg: %.2f ms and direction left       \n",ProcessImage_timer); 
         break;
     case 2:
-        printf("Thread Time avg: %f ms and direction right      \n",avg_time); 
+        printf("Thread Time avg: %.2f ms and direction right      \n",ProcessImage_timer); 
         break;
     case 3:
-        printf("Thread Time avg: %f ms and direction forward    \n",avg_time); 
+        printf("Thread Time avg: %.2f ms and direction forward    \n",ProcessImage_timer); 
         break;
     default:
-        printf("Thread Time avg: %f ms and direction not deteced\n",avg_time); 
+        printf("Thread Time avg: %.2f ms and direction not deteced\n",ProcessImage_timer); 
     }
 }
 
 void DisplayImg(){
     SDL_UnlockTexture(g_streamTexture); //lab inst
-    SDL_RenderCopy(g_renderer, g_streamTexture, NULL, NULL); // Kommer från lab ins
+    SDL_RenderCopy(g_renderer, g_streamTexture, NULL, NULL); // Kommer frÃ¥n lab ins
     SDL_RenderPresent(g_renderer);// lab inst
 }
 
-double ProcessImage(const unsigned char *_yuv, int _size, Pixel* rgbConversion){
+int ProcessImage(const unsigned char *_yuv, int _size, Pixel* rgbConversion){
     //printf("Processing image! \n");
     //Multi threading setting
-    int Threads = IMG_THREADS;
-    ImageParts parts[Threads]; //array to store parts using our local struct
+    ImageParts parts[IMG_THREADS]; //array to store parts using our local struct
     //split image into parts
-    int part_size = _size / Threads;
-    for (int i= 0; i < Threads; i++){
+    int part_size = _size / IMG_THREADS;
+    for (int i= 0; i < IMG_THREADS; i++){
         parts[i].start = part_size * i;
         parts[i].end = (i + 1) * part_size -1;
         parts[i].rgb_index = part_size * i / 2;
     }
     //printf("Starting multithread of image\n");
-    double t0 = omp_get_wtime();
-    #pragma omp parallel num_threads(Threads)
+    
+    #pragma omp parallel num_threads(IMG_THREADS)
     {
         //Get ID of the current thread:
         int id = omp_get_thread_num();
@@ -212,9 +190,17 @@ double ProcessImage(const unsigned char *_yuv, int _size, Pixel* rgbConversion){
             YUYVtoRGB(y2, u, v, &rgbConversion[part.rgb_index++]);
         }
     }
-    //printf("im working \n");
-    set_circle(rgbConversion);
-    return t0;
+    
+    int pos_x = -1;
+    int pos_y = -1;
+    int brightest_red = 0;
+
+    find_laser(rgbConversion, &pos_x, &pos_y, &brightest_red);
+    int last_dic = direction(pos_x, pos_y);
+    if (pos_x == -1 || pos_y == -1)
+        return last_dic;
+    set_circle(rgbConversion, &pos_x, &pos_y);
+    return last_dic;
 }
 
 
@@ -234,7 +220,7 @@ int setup_camera(
     if (ioctl(cameraHandle, VIDIOC_S_FMT, &format) < 0)
     {
         printf("VIDIOC_S_FMT Video format set fail\n");
-        return 1;
+        return -1;
     }
     printf("Camera Set up done!\n");
     return cameraHandle;
@@ -252,7 +238,7 @@ int setup_req_buffer(
     if (ioctl(cameraHandle, VIDIOC_REQBUFS, &req) < 0)
     {
         printf("VIDIOC_REQBUFS failed!\n");
-        return 1;
+        return -1;
     }
     return req.count;
 }
@@ -264,50 +250,33 @@ int setup_SDL(){
     g_window = SDL_CreateWindow("SDL Window", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, CAM_WIDTH, CAM_HEIGHT, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
     if (g_window == NULL){
         printf("G-window error \n");
-        return 1;
+        return -1;
     }
     
     // Create render window
     g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
     if (g_renderer == NULL){
         printf("G-renderer error \n");
-        return 1;
+        return -1;
     }
     // Create a texture we can stream to
     g_streamTexture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, CAM_WIDTH, CAM_HEIGHT);
     if (g_streamTexture == NULL){
         printf("G-streamTexture error \n");
-        return 1;
+        return -1;
     }
-}
-
-void CaptureImage(Pixel* rgbConversion){
-    while(!exitprogramflag){
-        Pixel* capture_pixels = malloc(CAM_WIDTH * CAM_HEIGHT * sizeof(Pixel));
-        memcpy(capture_pixels, rgbConversion, CAM_WIDTH * CAM_HEIGHT * sizeof(Pixel));
-        for(int i = 0; i < CAM_HEIGHT * CAM_WIDTH; i++){
-            int r = capture_pixels[i].B;
-            int b = capture_pixels[i].R;
-            capture_pixels[i].R = r;
-            capture_pixels[i].B = b;
-        }
-        printf("Photo saved as test.png\n");
-        //Fix me, do a return on rgb conversion
-        stbi_write_png(FILE_NAME, CAM_WIDTH, CAM_HEIGHT, CHANNEL_NUM, capture_pixels, CAM_WIDTH * CHANNEL_NUM);
-        captureflag = 0;
-        free(capture_pixels);
-    }
-    
+    return 0;
 }
 
 int main(){
     int cameraHandle = setup_camera(CAM_WIDTH, CAM_HEIGHT, CAM_FORMAT);
     if (cameraHandle < 0){
-        return 1;
+        printf("Camera failed to start\n");
+        return -1;
     }
     int request_buffers_count = setup_req_buffer(cameraHandle);
-    if (cameraHandle < 0){
-        return 1;
+    if (request_buffers_count == -1){
+        return -1;
     }
     // query the created buffers
     struct v4l2_buffer* buffers[2];
@@ -319,12 +288,13 @@ int main(){
         buf.index = i;
         if (ioctl(cameraHandle, VIDIOC_QUERYBUF, &buf) < 0) {
             printf("VIDIOC_QUERYBUF failed!\n");
-            return 1;
+            return -1;
         }
+
         buffers[i] = (struct v4l2_buffer*)malloc(sizeof(struct v4l2_buffer)); // Allocate memory for buffer
         if (!buffers[i]) {
             printf("Failed to allocate memory for buffer %d\n", i);
-            return 1;
+            return -1;
         }
         *buffers[i] = buf; // Copy buffer information
 
@@ -334,7 +304,7 @@ int main(){
         buffers[i]->memory = V4L2_MEMORY_MMAP;
         if (ioctl(cameraHandle, VIDIOC_QBUF, buffers[i]) < 0) {
             printf("VIDIOC_QBUF failed!\n");
-            return 1;
+            return -1;
         }
         }
         // Image memory
@@ -343,7 +313,7 @@ int main(){
             ImageMemory[i] = (unsigned char*)mmap(NULL, buffers[i]->length, PROT_READ, MAP_SHARED, cameraHandle, buffers[i]->m.offset); // Fix me free mmap
             if (ImageMemory[i] == NULL) {
                 printf("Image memory allocation failed!\n");
-                return 1;
+                return -1;
             }
         }
         // Setup for streaming
@@ -351,54 +321,63 @@ int main(){
         if (ioctl(cameraHandle, VIDIOC_STREAMON, &type) < 0)
         {
             printf("VIDIOC_STREAMON failed!\n");
-            return 1;
+            return -1;
 
         }
         // Setup SDL
         int SDL_state = setup_SDL();
         if (SDL_state < 0){
-            return 1;
+            printf("Setup SDL failed\n");
+            return -1;
         }
-        void *pixels;
-        int pitch;
-        SDL_LockTexture(g_streamTexture, NULL, &pixels, &pitch);
-        Pixel* rgbConversion = (Pixel*)pixels;
         bool quit = false;
         SDL_Event event;
-        int buffer_index = 0; //Index for what buffer we are useing
         // START STREAMING
-        pthread_t CaptureThread;
-        pthread_create(&CaptureThread, NULL, (void *(*)(void *)) CaptureImage, rgbConversion);
         while(!quit){
             //CAPTURE IMAGE
             struct v4l2_buffer buf;
             memset(&buf, 0, sizeof(buf));
             buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             buf.memory = V4L2_MEMORY_MMAP;
+
             if (ioctl(cameraHandle, VIDIOC_DQBUF, &buf) < 0)
             {
                 return errno;
             }
-            double t0 = ProcessImage(ImageMemory[buffer_index], buf.bytesused, rgbConversion);
+            void *pixels;
+            int pitch;
+
+            SDL_LockTexture(g_streamTexture, NULL, &pixels, &pitch);
+            Pixel* rgbConversion = (Pixel*)pixels;
+            double t0 = omp_get_wtime();
+            int last_dic = ProcessImage(ImageMemory[buf.index], buf.bytesused, rgbConversion);
+            double ProcessImage_timer = (omp_get_wtime() - t0) * 1000;
             DisplayImg();
-            double avg_time = CalculateTime(t0);
-            PrintImageData(avg_time, last_dic);
+            PrintImageData(ProcessImage_timer, last_dic);
             if(ioctl(cameraHandle, VIDIOC_QBUF, &buf) < 0){
                 printf("Queue failed\n");
-                return 1;
+                return -1;
                 }
-            buffer_index = buffer_index++ % request_buffers_count; //rotate buffer function
-        while(SDL_PollEvent(&event)){
+            while(SDL_PollEvent(&event)){
                 //printf("knapp down\n");
                 if (event.type == SDL_KEYDOWN)
                 {
                         if (event.key.keysym.sym == SDLK_ESCAPE){
                             quit = true;
-                            return 0;
                         }
                         if (event.key.keysym.sym == SDLK_c){
-                            captureflag = 1;
+                            Pixel* capture_pixels = malloc(CAM_WIDTH * CAM_HEIGHT * sizeof(Pixel));
+                            memcpy(capture_pixels, rgbConversion, CAM_WIDTH * CAM_HEIGHT * sizeof(Pixel));
 
+                            for(int i = 0; i < CAM_HEIGHT * CAM_WIDTH; i++){
+                                int r = capture_pixels[i].B;
+                                int b = capture_pixels[i].R;
+                                capture_pixels[i].R = r;
+                                capture_pixels[i].B = b;
+                            }
+                            printf("Photo saved as test.png\n");
+                            //Fix me, do a return on rgb conversion
+                            stbi_write_png(FILE_NAME, CAM_WIDTH, CAM_HEIGHT, CHANNEL_NUM, capture_pixels, CAM_WIDTH * CHANNEL_NUM);
                         }
                 }
             }
@@ -407,19 +386,16 @@ int main(){
         for (int i = 0; i < request_buffers_count; i++) {
             if (munmap(ImageMemory[i], buffers[i]->length) < 0) {
                 perror("munmap failed");
-                return 1;
+                return -1;
             }
         }
         for (int i = 0; i < request_buffers_count; i++) {
             free(buffers[i]);
             }
         free(ImageMemory);
-        printf("closeing window \n");
-        //closeing SDL window down
-        exitprogramflag = true;
-        SDL_DestroyWindow(g_window);
-        SDL_Quit();
-        close(cameraHandle);
-        
-
+    printf("closeing window \n");
+    //closeing SDL window down
+    SDL_DestroyWindow(g_window);
+    SDL_Quit();
+    close(cameraHandle);
 }
